@@ -44,28 +44,17 @@ This project is built to assist developers, network analysts, and security teams
 ''bash
 git clone https://github.com/your-username/Log-Analyzer.git
 cd Log-Analyzer
-2️⃣ Install Dependencies
+### 2️⃣ Install Dependencies
 bash
 Copy
 Edit
 pip install -r requirements.txt
-3️⃣ Run the Streamlit App
+### 3️⃣ Run the Streamlit App
 bash
 Copy
 Edit
 streamlit run app1.py
-📂 Project Structure
-graphql
-Copy
-Edit
-Log-Analyzer/
-│
-├── app1.py               # Main Streamlit app
-├── ollama_utils.py       # DeepSeek LLM API integration
-├── log_helpers.py        # Log processing utilities
-├── visualizer.py         # Functions for charts and graphs
-├── requirements.txt      # Python dependencies
-└── README.md             # Project documentation
+
 🧠 AI Chatbot Instructions
 Once a CSV log file is uploaded:
 
@@ -141,12 +130,7 @@ Plotly
 
 Hugging Face
 
-🔗 Made with ❤️ by Your Name
-
-yaml
-Copy
-Edit
-
+🔗 Made with ❤️ by @dadicharan
 
 ---
 
