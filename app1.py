@@ -1,122 +1,172 @@
-import streamlit as st
-import pandas as pd
 import os
-import glob
-import matplotlib.pyplot as plt
+import re
+import numpy as np
+import streamlit as st
+import fitz  # PyMuPDF
+from docx import Document
+from sklearn.metrics.pairwise import cosine_similarity
+from wordcloud import WordCloud
 import plotly.express as px
-import ollama  # DeepSeek LLM API
+from sentence_transformers import SentenceTransformer
+import ollama
+from joblib import Memory
 
-# Set Page Configuration
-st.set_page_config(page_title="Log Analyzer with AI", layout="wide")
+# ---------------------- Load Config and Styles ----------------------
+from config import BERT_MODEL_NAME, INDUSTRY_PROFILES
+from styles import CUSTOM_CSS
 
-# Path to dataset folder
-DATASET_DIR = "/home/intern/Downloads"  # Corrected path format
+# ---------------------- Page Setup ----------------------
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+st.title("🧠 ResumeIQ Pro")
 
-st.title("?? AI-Powered Log Analysis Using DeepSeek LLM")
+# ---------------------- Model and Cache ----------------------
+memory = Memory(location=".", verbose=0)
+model = SentenceTransformer(BERT_MODEL_NAME)
 
-# Function to get all CSV files dynamically
-def get_datasets():
-    files = glob.glob(os.path.join(DATASET_DIR, "*.csv"))
-    dataset_dict = {os.path.basename(f).replace(".csv", ""): f for f in files}
-    return dataset_dict
-
-# Get available datasets
-datasets = get_datasets()
-
-# Allow user to upload new dataset
-uploaded_file = st.file_uploader("?? Upload a New Dataset (CSV File)", type=["csv"])
-if uploaded_file:
-    new_file_path = os.path.join(DATASET_DIR, uploaded_file.name)
-    with open(new_file_path, "wb") as f:
-        f.write(uploaded_file.getbuffer())
-    st.success(f"? New dataset '{uploaded_file.name}' uploaded successfully! Refresh to see it in the dropdown.")
-
-# Dropdown to select dataset
-if datasets:
-    dataset_name = st.selectbox("?? Select a Dataset", list(datasets.keys()))
-    file_path = datasets[dataset_name]
-
-    # Load selected dataset
+def get_ai_feedback(text):
     try:
-        df = pd.read_csv(file_path)
-        st.success(f"? Loaded '{dataset_name}' dataset successfully!")
-
-        # Ensure Timestamp column exists
-        if "Timestamp" not in df.columns:
-            st.warning("?? No 'Timestamp' column found! Creating one automatically.")
-            df["Timestamp"] = pd.date_range(start='1/1/2024', periods=len(df), freq='S')
-        else:
-            df["Timestamp"] = pd.to_datetime(df["Timestamp"], errors='coerce')
-
-        # Show dataset preview
-        st.write("### ?? Dataset Overview")
-        st.dataframe(df.head(20), use_container_width=True)
-
-        # Select column for visualization
-        selected_column = st.selectbox("?? Select a Column for Visualization", df.columns)
-
-        # Generate Histogram with Plotly
-        st.write(f"### ?? Distribution of '{selected_column}'")
-        fig = px.histogram(df, x=selected_column, nbins=30, title=f"Distribution of {selected_column}")
-        st.plotly_chart(fig, use_container_width=True)
-
-        # **Log Activity Graph**
-        st.write("### ?? Log Activity Over Time")
-        df["hour"] = df["Timestamp"].dt.hour
-        log_counts = df["hour"].value_counts().sort_index()
-        
-        fig, ax = plt.subplots(figsize=(10, 5))
-        log_counts.plot(kind="bar", color="skyblue", ax=ax)
-        ax.set_xlabel("Hour of the Day")
-        ax.set_ylabel("Log Count")
-        ax.set_title("Log Activity Over Time")
-        st.pyplot(fig)
-
-        # **AI-Powered Log Analysis**
-        st.write("### ?? AI Chatbot for Log Analysis")
-        if "messages" not in st.session_state:
-            st.session_state.messages = []
-
-        # Display chat messages
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
-
-        # Accept user input
-        if prompt := st.chat_input("?? Ask about the logs (e.g., anomalies, traffic patterns)..."):
-            st.session_state.messages.append({"role": "user", "content": prompt})
-
-            with st.chat_message("user"):
-                st.markdown(prompt)
-
-            # **DeepSeek LLM Processing**
-            try:
-                # Convert dataset to text for model input
-                sample_data = df.head(100).to_string()
-                llm_prompt = f"""
-                You are an AI analyzing network log data.
-                The user asked: '{prompt}'
-                Below is a sample of the log dataset:
-                {sample_data}
-                Provide an insightful answer based on the logs.
-                """
-
-                # Query DeepSeek LLM using Ollama
-                response = ollama.chat(model="deepseek", messages=[{"role": "user", "content": llm_prompt}])
-
-                # Extract and format response
-                response_text = response["message"]["content"]
-
-            except Exception as e:
-                response_text = f"?? Error analyzing logs: {e}"
-
-            # Display response
-            with st.chat_message("assistant"):
-                st.markdown(response_text)
-            st.session_state.messages.append({"role": "assistant", "content": response_text})
-
+        response = ollama.chat(
+            model="llama3",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Analyze this resume and provide 3 specific improvement suggestions:\n"
+                        "- Focus on quantifiable achievements\n"
+                        "- Suggest better action verbs\n"
+                        "- Identify missing sections"
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": text
+                }
+            ]
+        )
+        return response['message']['content']
     except Exception as e:
-        st.error(f"? Error loading dataset: {e}")
+        return f"AI Feedback Error: {str(e)}"
 
-else:
-    st.warning("?? No datasets found! Please upload one.")
+# ---------------------- Utility Functions ----------------------
+@memory.cache
+def calculate_similarity(resume_text, jd_text):
+    embeddings = model.encode([resume_text, jd_text])
+    return cosine_similarity([embeddings[0]], [embeddings[1]])[0][0] * 100
+
+def extract_text(file):
+    if file.type == "application/pdf":
+        with fitz.open(stream=file.read(), filetype="pdf") as doc:
+            return " ".join([page.get_text() for page in doc]).lower()
+    elif file.type == "text/plain":
+        return file.read().decode().lower()
+    elif file.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        doc = Document(file)
+        return " ".join([para.text for para in doc.paragraphs]).lower()
+    return ""
+
+def analyze_sections(text):
+    section_patterns = {
+        "Skills": r"(skills|technical skills)(.*?)(experience|education)",
+        "Experience": r"(experience|work history)(.*?)(education|projects)",
+        "Education": r"(education|academic background)(.*?)(skills|certifications)"
+    }
+    return {
+        section: 1 if re.search(pattern, text, re.IGNORECASE | re.DOTALL) else 0
+        for section, pattern in section_patterns.items()
+    }
+
+# ---------------------- Streamlit UI ----------------------
+def main():
+    with st.sidebar:
+        st.header("⚙️ Configuration")
+        jd_input = st.text_area("📝 Job Description:", height=300)
+        industry = st.selectbox("🏭 Industry Focus:", list(INDUSTRY_PROFILES.keys()))
+        min_score = st.slider("🎯 Minimum Match Score (%):", 0, 100, 60)
+        analysis_mode = st.radio("🔧 Analysis Mode:", ["Basic", "Advanced AI"])
+        show_wordcloud = st.checkbox("☁️ Word Cloud", True)
+        show_skill_gap = st.checkbox("🔍 Skill Gap Analysis", True)
+
+    uploaded_files = st.file_uploader(
+        "📤 Upload Resumes (PDF/DOCX/TXT)",
+        type=["pdf", "docx", "txt"],
+        accept_multiple_files=True
+    )
+
+    if st.button("🚀 Start Comprehensive Analysis", use_container_width=True):
+        if not all([jd_input, uploaded_files]):
+            st.error("⚠️ Please provide both job description and resumes")
+            return
+
+        with st.spinner("🔍 Analyzing resumes..."):
+            jd_text = re.sub(r'\W+', ' ', jd_input).lower()
+            profile_keywords = INDUSTRY_PROFILES[industry]["keywords"]
+            jd_keywords = set(re.findall(r'\b[a-z]{4,15}\b', jd_text)).union(profile_keywords)
+
+            results = []
+            for file in uploaded_files:
+                with st.expander(f"📄 {file.name}", expanded=False):
+                    col1, col2, col3 = st.columns([4, 2, 2])
+
+                    with col1:
+                        resume_text = extract_text(file)
+                        resume_clean = re.sub(r'\W+', ' ', resume_text).lower()
+
+                        similarity = calculate_similarity(resume_clean, jd_text)
+                        section_scores = analyze_sections(resume_text)
+
+                        found_keywords = [kw for kw in jd_keywords if kw in resume_clean]
+                        missing_keywords = list(jd_keywords - set(found_keywords))
+
+                        feedback = get_ai_feedback(resume_text) if analysis_mode == "Advanced AI" else ""
+                        results.append((file.name, similarity, set(found_keywords), feedback))
+
+                    with col2:
+                        st.markdown("### 📊 Metrics")
+                        st.metric("Semantic Match", f"{similarity:.1f}%")
+                        st.metric("Keywords Found", f"{len(found_keywords)}/{len(jd_keywords)}")
+
+                        st.markdown("### 📑 Sections")
+                        for section, score in section_scores.items():
+                            st.progress(score, text=section)
+
+                    with col3:
+                        if feedback:
+                            st.markdown("### 💡 AI Suggestions")
+                            st.markdown(f"```\n{feedback}\n```")
+
+                        st.download_button(
+                            "💾 Download Analysis",
+                            data=file,
+                            file_name=f"analysis_{file.name}",
+                            mime="application/octet-stream"
+                        )
+
+            st.markdown("---")
+            st.header("📈 Executive Dashboard")
+
+            top_candidates = sorted(results, key=lambda x: x[1], reverse=True)[:3]
+            cols = st.columns(3)
+            for idx, (name, score, keywords, _) in enumerate(top_candidates):
+                with cols[idx]:
+                    st.markdown(f"### 🥇 #{idx+1} {name}")
+                    st.metric("Composite Score", f"{score:.1f}%")
+                    st.write(f"**Keywords Found:** {len(keywords)}")
+
+            if show_skill_gap:
+                st.subheader("🔍 Industry Skill Gap")
+                missing_counts = {kw: sum(1 for _, _, kws, _ in results if kw not in kws) for kw in jd_keywords}
+                fig = px.treemap(
+                    names=list(missing_counts.keys()),
+                    parents=[""] * len(missing_counts),
+                    values=list(missing_counts.values()),
+                    color_discrete_sequence=px.colors.sequential.Blues_r
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+            if show_wordcloud:
+                st.subheader("☁️ Keyword Frequency Cloud")
+                wordcloud = WordCloud().generate(" ".join(jd_keywords))
+                st.image(wordcloud.to_array(), use_column_width=True)
+
+if __name__ == "__main__":
+    main()
